@@ -4,7 +4,7 @@
 # Copyright (C) 2023 https://github.com/ophub/kernel
 #==========================================================================
 
-name: Compile rockchip rk35xx kernel
+name: Compile HiBuffx rockchip rk35xx kernel
 
 on:
   repository_dispatch:

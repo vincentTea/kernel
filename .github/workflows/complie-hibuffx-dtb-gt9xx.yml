@@ -2,7 +2,7 @@
 # Description: Compile custom DTB and kernel module for Rockchip rk3566
 # Copyright (C) 2023 https://github.com/unifreq/linux-5.10.y-rk35xx
 # Copyright (C) 2023 https://github.com/ophub/kernel
-# Adapted for custom builds by your request.
+# Adapted for custom builds based on a predefined config file.
 #==========================================================================
 
 name: Compile Custom Rockchip DTB and Module
@@ -28,9 +28,11 @@ on:
 
 env:
   TZ: Etc/UTC
-  # Hardcode the kernel source
+  # Hardcode the kernel source and branch
   KERNEL_REPO_URL: https://github.com/vincentTea/linux-6.1.y-rockchip.git
   KERNEL_REPO_BRANCH: main # You can change this to a specific branch if needed
+  # Hardcode the path to the kernel config file within this repository
+  KERNEL_CONFIG_PATH: kernel-config/release/rk35xx/config-6.1
 
 jobs:
   build:
@@ -38,7 +40,8 @@ jobs:
     if: ${{ github.event.repository.owner.id }} == ${{ github.event.sender.id }}
 
     steps:
-      - name: Checkout
+      - name: Checkout workflow repository
+        # This step checks out your repository, making the kernel-config folder available
         uses: actions/checkout@v4
 
       - name: Initialization environment
@@ -97,11 +100,16 @@ jobs:
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 3. Prepare kernel .config (necessary for any compilation)
-          echo "Generating kernel config..."
-          make rockchip_defconfig
+          # 3. Prepare kernel .config by copying the predefined config file
+          echo "Using predefined kernel config: ${{ env.KERNEL_CONFIG_PATH }}"
+          # The checkout step places your repo in ${{ github.workspace }}
+          cp "${{ github.workspace }}/${{ env.KERNEL_CONFIG_PATH }}" ./.config
           
-          # 4. Compile targets based on user input
+          # 4. Prepare the source tree for compilation based on the new .config
+          # This is crucial for headers and scripts to be ready
+          make olddefconfig
+          
+          # 5. Compile targets based on user input
           BUILD_TARGET="${{ inputs.build_target }}"
           
           if [[ "$BUILD_TARGET" == "dtb" || "$BUILD_TARGET" == "both" ]]; then
@@ -111,7 +119,7 @@ jobs:
           
           if [[ "$BUILD_TARGET" == "gt9xx" || "$BUILD_TARGET" == "both" ]]; then
             echo "Compiling kernel module: gt9xx.ko"
-            # We need to run 'make modules_prepare' before compiling a single module
+            # We still need 'modules_prepare' for out-of-tree or single module builds
             make modules_prepare
             make M=drivers/input/touchscreen/gt9xx/
           fi
@@ -119,6 +127,9 @@ jobs:
           echo "Compilation finished."
           echo "status=success" >> ${GITHUB_OUTPUT}
 
+      # The rest of the workflow (packaging, cleanup, release) remains the same
+      # as the previous version, as its logic is still correct.
+      
       - name: Package Artifacts
         id: package
         if: steps.compile.outputs.status == 'success' && !cancelled()
@@ -140,7 +151,6 @@ jobs:
           cd output
           tar -zcvf "custom_build_${TIMESTAMP}.tar.gz" .
           
-          # Set environment variables for the release step
           echo "PACKAGED_STATUS=success" >> $GITHUB_ENV
           echo "PACKAGED_OUTPUTPATH=${PWD}" >> $GITHUB_ENV
           echo "PACKAGE_NAME=custom_build_${TIMESTAMP}.tar.gz" >> $GITHUB_ENV
@@ -163,6 +173,7 @@ jobs:
             echo "### Custom Build Artifacts for rk3566"
             echo "- **Build Target:** ${{ inputs.build_target }}"
             echo "- **Kernel Source:** \`${{ env.KERNEL_REPO_URL }}\`"
+            echo "- **Kernel Config:** \`${{ env.KERNEL_CONFIG_PATH }}\`"
             echo "- **Generated File:** `${{ env.PACKAGE_NAME }}`"
             echo ""
             echo "This release contains the following compiled files:"

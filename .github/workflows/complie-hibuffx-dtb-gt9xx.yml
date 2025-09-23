@@ -28,10 +28,8 @@ on:
 
 env:
   TZ: Etc/UTC
-  # Hardcode the kernel source and branch
   KERNEL_REPO_URL: https://github.com/vincentTea/linux-6.1.y-rockchip.git
-  KERNEL_REPO_BRANCH: main # You can change this to a specific branch if needed
-  # Hardcode the path to the kernel config file within this repository
+  KERNEL_REPO_BRANCH: main
   KERNEL_CONFIG_PATH: kernel-config/release/rk35xx/config-6.1
 
 jobs:
@@ -41,11 +39,11 @@ jobs:
 
     steps:
       - name: Checkout workflow repository
-        # This step checks out your repository, making the kernel-config folder available
         uses: actions/checkout@v4
 
       - name: Initialization environment
         id: init
+        # ... (This step remains the same)
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -69,6 +67,7 @@ jobs:
 
       - name: Create simulated physical disk
         id: disk
+        # ... (This step remains the same)
         run: |
           mnt_size=$(expr $(df -h /mnt | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 1)
           root_size=$(expr $(df -h / | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 4)
@@ -92,34 +91,50 @@ jobs:
         run: |
           echo "Starting compilation process..."
           
-          # 1. Clone the specific kernel source
           git clone --depth=1 -b ${KERNEL_REPO_BRANCH} ${KERNEL_REPO_URL} kernel_src
           cd kernel_src
           
-          # 2. Setup build environment
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 3. Prepare kernel .config by copying the predefined config file
           echo "Using predefined kernel config: ${{ env.KERNEL_CONFIG_PATH }}"
-          # The checkout step places your repo in ${{ github.workspace }}
           cp "${{ github.workspace }}/${{ env.KERNEL_CONFIG_PATH }}" ./.config
           
-          # 4. Prepare the source tree for compilation based on the new .config
-          # This is crucial for headers and scripts to be ready
           make olddefconfig
           
-          # 5. Compile targets based on user input
           BUILD_TARGET="${{ inputs.build_target }}"
           
           if [[ "$BUILD_TARGET" == "dtb" || "$BUILD_TARGET" == "both" ]]; then
-            echo "Compiling DTB: rk3566-taishanpi-dsi-hibuffx-v10.dtb"
-            make arch/arm64/boot/dts/rockchip/rk3566-taishanpi-dsi-hibuffx-v10.dtb
+            echo "Compiling specific DTB using the Makefile modification method..."
+            
+            # --- START: MODIFICATION BASED ON YOUR SUGGESTION ---
+            
+            # 1. Define the Makefile path and the target DTB file
+            DTS_MAKEFILE="arch/arm64/boot/dts/rockchip/Makefile"
+            TARGET_DTB_NAME="rk3566-taishanpi-dsi-hibuffx-v10.dtb"
+            
+            # 2. Backup the original Makefile (good practice)
+            mv "${DTS_MAKEFILE}" "${DTS_MAKEFILE}.bak"
+            
+            # 3. Create a new, minimal Makefile containing only our target and necessary directives
+            echo "Filtering Makefile to build only ${TARGET_DTB_NAME}..."
+            grep -E "(${TARGET_DTB_NAME}|subdir-y)" "${DTS_MAKEFILE}.bak" > "${DTS_MAKEFILE}"
+            
+            echo "--- Content of new temporary Makefile ---"
+            cat "${DTS_MAKEFILE}"
+            echo "---------------------------------------"
+            
+            # 4. Run 'make dtbs', which will now be very fast
+            make dtbs
+            
+            # 5. Restore the original Makefile (cleans up the source tree)
+            mv "${DTS_MAKEFILE}.bak" "${DTS_MAKEFILE}"
+            
+            # --- END: MODIFICATION ---
           fi
           
           if [[ "$BUILD_TARGET" == "gt9xx" || "$BUILD_TARGET" == "both" ]]; then
             echo "Compiling kernel module: gt9xx.ko"
-            # We still need 'modules_prepare' for out-of-tree or single module builds
             make modules_prepare
             make M=drivers/input/touchscreen/gt9xx/
           fi
@@ -127,8 +142,7 @@ jobs:
           echo "Compilation finished."
           echo "status=success" >> ${GITHUB_OUTPUT}
 
-      # The rest of the workflow (packaging, cleanup, release) remains the same
-      # as the previous version, as its logic is still correct.
+      # The rest of the workflow (packaging, cleanup, release) remains unchanged
       
       - name: Package Artifacts
         id: package
@@ -139,6 +153,7 @@ jobs:
           BUILD_TARGET="${{ inputs.build_target }}"
           
           if [[ "$BUILD_TARGET" == "dtb" || "$BUILD_TARGET" == "both" ]]; then
+            # The output path is now standard because we used `make dtbs`
             cp kernel_src/arch/arm64/boot/dts/rockchip/rk3566-taishanpi-dsi-hibuffx-v10.dtb output/
           fi
           

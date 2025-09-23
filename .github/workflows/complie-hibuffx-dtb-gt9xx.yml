@@ -100,25 +100,25 @@ jobs:
           
           BUILD_TARGET="${{ inputs.build_target }}"
 
-          # If gt9xx or both is selected, ensure its config AND dependencies are enabled
           if [[ "$BUILD_TARGET" == "gt9xx" || "$BUILD_TARGET" == "both" ]]; then
             echo "Ensuring module dependencies and the module itself are enabled..."
-            # Enable the core dependency: I2C support
             ./scripts/config --enable I2C
-            # Enable the touchscreen module
             ./scripts/config --module TOUCHSCREEN_GT9XX
           fi
           
-          # Apply all config changes and prepare the kernel source tree
           echo "Applying config changes and preparing source tree..."
           make olddefconfig
           
           if [[ "$BUILD_TARGET" == "dtb" || "$BUILD_TARGET" == "both" ]]; then
-            echo "Compiling specific DTB using the Makefile modification method..."
+            echo "Compiling specific DTB..."
             DTS_MAKEFILE="arch/arm64/boot/dts/rockchip/Makefile"
             TARGET_DTB_NAME="rk3566-taishanpi-dsi-hibuffx-v10.dtb"
+            
             mv "${DTS_MAKEFILE}" "${DTS_MAKEFILE}.bak"
-            grep -E "(${TARGET_DTB_NAME}|subdir-y)" "${DTS_MAKEFILE}.bak" > "${DTS_MAKEFILE}"
+            # Filter the Makefile to build only the target DTB, and also remove 'overlay' from subdir-y to prevent building all DTBOs
+            grep "(${TARGET_DTB_NAME})" "${DTS_MAKEFILE}.bak" > "${DTS_MAKEFILE}"
+            grep "(subdir-y)" "${DTS_MAKEFILE}.bak" | sed 's/ overlay//' >> "${DTS_MAKEFILE}"
+            
             echo "--- Content of new temporary Makefile ---"
             cat "${DTS_MAKEFILE}"
             echo "---------------------------------------"
@@ -127,7 +127,13 @@ jobs:
           fi
           
           if [[ "$BUILD_TARGET" == "gt9xx" || "$BUILD_TARGET" == "both" ]]; then
+            echo "Building kernel to generate Module.symvers (required for valid modules)..."
+            # This step is CRUCIAL. It builds the kernel image, which generates the Module.symvers file.
+            # Without it, the module will have undefined symbols and be unusable.
+            make -j$(nproc)
+            
             echo "Compiling kernel module: goodix_gt9xx.ko"
+            # 'modules_prepare' is still good practice, though 'make' covers it.
             make modules_prepare
             make M=drivers/input/touchscreen/gt9xx/
           fi
@@ -148,17 +154,19 @@ jobs:
           fi
           
           if [[ "$BUILD_TARGET" == "gt9xx" || "$BUILD_TARGET" == "both" ]]; then
-            # Corrected the filename from gt9xx.ko to goodix_gt9xx.ko
             cp kernel_src/drivers/input/touchscreen/gt9xx/goodix_gt9xx.ko output/
           fi
           
           echo "Creating tarball..."
           TIMESTAMP=$(date +'%Y%m%d-%H%M')
           cd output
-          tar -zcvf "custom_build_${TIMESTAMP}.tar.gz" .
+          # Corrected tar command to use '*' instead of '.' to avoid archiving the output file itself.
+          tar -zcvf "custom_build_${TIMESTAMP}.tar.gz" *
           
+          # Go back to the parent directory to correctly set the output path
+          cd ..
           echo "PACKAGED_STATUS=success" >> $GITHUB_ENV
-          echo "PACKAGED_OUTPUTPATH=${PWD}" >> $GITHUB_ENV
+          echo "PACKAGED_OUTPUTPATH=${PWD}/output" >> $GITHUB_ENV
           echo "PACKAGE_NAME=custom_build_${TIMESTAMP}.tar.gz" >> $GITHUB_ENV
 
       - name: Clean up source code
@@ -187,7 +195,6 @@ jobs:
               echo "- \`rk3566-taishanpi-dsi-hibuffx-v10.dtb\`"
             fi
             if [[ "${{ inputs.build_target }}" == "gt9xx" || "${{ inputs.build_target }}" == "both" ]]; then
-              # Corrected the filename in release notes
               echo "- \`goodix_gt9xx.ko\`"
             fi
             echo 'EOF_BODY'

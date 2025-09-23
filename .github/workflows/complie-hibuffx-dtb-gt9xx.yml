@@ -1,0 +1,187 @@
+#==========================================================================
+# Description: Compile custom DTB and kernel module for Rockchip rk3566
+# Copyright (C) 2023 https://github.com/unifreq/linux-5.10.y-rk35xx
+# Copyright (C) 2023 https://github.com/ophub/kernel
+# Adapted for custom builds by your request.
+#==========================================================================
+
+name: Compile Custom Rockchip DTB and Module
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: "Select what to compile"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - dtb
+          - gt9xx
+          - both
+      delete_source:
+        description: "Delete the source after compilation"
+        required: false
+        default: true
+        type: boolean
+
+env:
+  TZ: Etc/UTC
+  # Hardcode the kernel source
+  KERNEL_REPO_URL: https://github.com/vincentTea/linux-6.1.y-rockchip.git
+  KERNEL_REPO_BRANCH: main # You can change this to a specific branch if needed
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04-arm
+    if: ${{ github.event.repository.owner.id }} == ${{ github.event.sender.id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialization environment
+        id: init
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          docker rmi $(docker images -q) 2>/dev/null
+          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null
+          sudo swapoff -a
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo -E apt-get -y update
+          sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo -E apt-get -y install $(curl -fsSL https://tinyurl.com/ubuntu2204-build-armbian)
+          sudo -E systemctl daemon-reload
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
+          sudo rm -rf ~/{.cargo,.dotnet,.rustup}
+          sudo -E timedatectl set-timezone "${TZ}"
+          sudo -E apt-get install -y ntpdate
+          sudo -E ntpdate pool.ntp.org
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Create simulated physical disk
+        id: disk
+        run: |
+          mnt_size=$(expr $(df -h /mnt | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 1)
+          root_size=$(expr $(df -h / | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 4)
+          sudo truncate -s "${mnt_size}"G /mnt/mnt.img
+          sudo truncate -s "${root_size}"G /root.img
+          sudo losetup /dev/loop6 /mnt/mnt.img
+          sudo losetup /dev/loop7 /root.img
+          sudo pvcreate /dev/loop6
+          sudo pvcreate /dev/loop7
+          sudo vgcreate github /dev/loop6 /dev/loop7
+          sudo lvcreate -n runner -l 100%FREE github
+          sudo mkfs.xfs /dev/github/runner
+          sudo mkdir -p /builder
+          sudo mount /dev/github/runner /builder
+          sudo chown -R runner.runner /builder
+          df -Th
+
+      - name: Compile DTB and/or Kernel Module
+        id: compile
+        working-directory: /builder
+        run: |
+          echo "Starting compilation process..."
+          
+          # 1. Clone the specific kernel source
+          git clone --depth=1 -b ${KERNEL_REPO_BRANCH} ${KERNEL_REPO_URL} kernel_src
+          cd kernel_src
+          
+          # 2. Setup build environment
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          # 3. Prepare kernel .config (necessary for any compilation)
+          echo "Generating kernel config..."
+          make rockchip_defconfig
+          
+          # 4. Compile targets based on user input
+          BUILD_TARGET="${{ inputs.build_target }}"
+          
+          if [[ "$BUILD_TARGET" == "dtb" || "$BUILD_TARGET" == "both" ]]; then
+            echo "Compiling DTB: rk3566-taishanpi-dsi-hibuffx-v10.dtb"
+            make arch/arm64/boot/dts/rockchip/rk3566-taishanpi-dsi-hibuffx-v10.dtb
+          fi
+          
+          if [[ "$BUILD_TARGET" == "gt9xx" || "$BUILD_TARGET" == "both" ]]; then
+            echo "Compiling kernel module: gt9xx.ko"
+            # We need to run 'make modules_prepare' before compiling a single module
+            make modules_prepare
+            make M=drivers/input/touchscreen/gt9xx/
+          fi
+          
+          echo "Compilation finished."
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Package Artifacts
+        id: package
+        if: steps.compile.outputs.status == 'success' && !cancelled()
+        working-directory: /builder
+        run: |
+          mkdir -p output
+          BUILD_TARGET="${{ inputs.build_target }}"
+          
+          if [[ "$BUILD_TARGET" == "dtb" || "$BUILD_TARGET" == "both" ]]; then
+            cp kernel_src/arch/arm64/boot/dts/rockchip/rk3566-taishanpi-dsi-hibuffx-v10.dtb output/
+          fi
+          
+          if [[ "$BUILD_TARGET" == "gt9xx" || "$BUILD_TARGET" == "both" ]]; then
+            cp kernel_src/drivers/input/touchscreen/gt9xx/gt9xx.ko output/
+          fi
+          
+          echo "Creating tarball..."
+          TIMESTAMP=$(date +'%Y%m%d-%H%M')
+          cd output
+          tar -zcvf "custom_build_${TIMESTAMP}.tar.gz" .
+          
+          # Set environment variables for the release step
+          echo "PACKAGED_STATUS=success" >> $GITHUB_ENV
+          echo "PACKAGED_OUTPUTPATH=${PWD}" >> $GITHUB_ENV
+          echo "PACKAGE_NAME=custom_build_${TIMESTAMP}.tar.gz" >> $GITHUB_ENV
+
+      - name: Clean up source code
+        if: inputs.delete_source == 'true' && always()
+        working-directory: /builder
+        run: |
+          echo "Deleting kernel source directory..."
+          rm -rf kernel_src
+
+      - name: Generate release tag and body
+        id: generate_content
+        if: env.PACKAGED_STATUS == 'success' && !cancelled()
+        run: |
+          TIMESTAMP=$(date +'%Y.%m.%d')
+          echo "release_tag=custom-build-${TIMESTAMP}" >> $GITHUB_ENV
+          {
+            echo 'release_body<<EOF_BODY'
+            echo "### Custom Build Artifacts for rk3566"
+            echo "- **Build Target:** ${{ inputs.build_target }}"
+            echo "- **Kernel Source:** \`${{ env.KERNEL_REPO_URL }}\`"
+            echo "- **Generated File:** `${{ env.PACKAGE_NAME }}`"
+            echo ""
+            echo "This release contains the following compiled files:"
+            if [[ "${{ inputs.build_target }}" == "dtb" || "${{ inputs.build_target }}" == "both" ]]; then
+              echo "- \`rk3566-taishanpi-dsi-hibuffx-v10.dtb\`"
+            fi
+            if [[ "${{ inputs.build_target }}" == "gt9xx" || "${{ inputs.build_target }}" == "both" ]]; then
+              echo "- \`gt9xx.ko\`"
+            fi
+            echo 'EOF_BODY'
+          } >> $GITHUB_ENV
+
+      - name: Upload Artifacts to Release
+        uses: ncipollo/release-action@main
+        if: env.PACKAGED_STATUS == 'success' && !cancelled()
+        with:
+          tag: ${{ env.release_tag }}
+          name: Custom Build (${{ env.release_tag }})
+          artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/${{ env.PACKAGE_NAME }}
+          allowUpdates: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: ${{ env.release_body }}

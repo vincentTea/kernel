@@ -10,6 +10,10 @@ on:
   repository_dispatch:
   workflow_dispatch:
     inputs:
+      release_note:
+        description: "Release 备注 (会显示在 Release 公告的最后)"
+        required: false
+        default: "常规构建"
       kernel_source:
         description: "Select the kernel source"
         required: false
@@ -53,25 +57,6 @@ on:
         options:
           - all
           - dtbs
-      kernel_toolchain:
-        description: "Select the compilation toolchain"
-        required: false
-        default: "gcc"
-        type: choice
-        options:
-          - gcc
-          - gcc-14.2
-          - gcc-14.3
-      compress_format:
-        description: "Set the initrd compression format"
-        required: false
-        default: "xz"
-        type: choice
-        options:
-          - xz
-          - gzip
-          - zstd
-          - lzma
       kernel_sign:
         description: "Set the kernel custom signature"
         required: false
@@ -173,24 +158,29 @@ jobs:
           kernel_auto: ${{ inputs.kernel_auto }}
           delete_source: ${{ inputs.delete_source }}
           kernel_package: ${{ inputs.kernel_package }}
-          kernel_toolchain: ${{ inputs.kernel_toolchain }}
+          kernel_toolchain: "gcc"
           kernel_sign: ${{ inputs.kernel_sign }}
           kernel_config: ${{ inputs.kernel_config }}
-          compress_format: ${{ inputs.compress_format }}
+          compress_format: "xz"
           silent_log: ${{ inputs.silent_log }}
 
       - name: Generate release tag and body
         id: generate_content
         if: ${{ env.PACKAGED_STATUS }} == 'success' && !cancelled()
         run: |
-          echo "release_tag=kernel_rk35xx_$(date +'%Y.%m.%d')" >> $GITHUB_ENV
+          echo "release_tag=kernel_rk35xx_$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_ENV
           {
             echo 'release_body<<EOF_BODY'
             echo "- The kernel can be used to compile Armbian and OpenWrt."
             echo "- The kernel source code comes from: **${{ inputs.kernel_source }}**"
-            echo "- The kernel compilation toolchain: **${{ inputs.kernel_toolchain }}**"
+            echo "- The kernel compilation toolchain: **gcc**"
             echo "- This is a dedicated kernel for \`Rockchip rk3528/rk3566/rk3568\` and is not compatible with other series."
             echo "- 这是 \`Rockchip rk3528/rk3566/rk3568\` 专用内核，和其他系列不通用。"
+            echo ""
+            echo "---"
+            echo ""
+            echo "**备注 (Note):**"
+            echo "${{ inputs.release_note }}"
             echo 'EOF_BODY'
           } >> $GITHUB_ENV
 

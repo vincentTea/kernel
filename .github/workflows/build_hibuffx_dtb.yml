@@ -1,0 +1,149 @@
+#==========================================================================
+# Description: Fast Compile Specific DTB with Custom Notes
+# Target: vincentTea/linux-6.1.y-rockchip
+#==========================================================================
+
+name: Compile Specific DTB (Fast Mode)
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      build_note:
+        description: "本次编译备注 (必填: 例如修改了LCD时序、电压等)"
+        required: true
+        default: "调试记录: "
+        type: string
+      # 即使代码写死，保留这个选项作为提示
+      kernel_source:
+        description: "Source Repo (Fixed)"
+        required: false
+        default: "vincentTea/linux-6.1.y-rockchip"
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04-arm
+    if: ${{ github.event.repository.owner.id }} == ${{ github.event.sender.id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialization environment
+        id: init
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          docker rmi $(docker images -q) 2>/dev/null
+          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null
+          sudo swapoff -a
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo -E apt-get -y update
+          # 安装编译依赖
+          sudo -E apt-get -y install git make gcc bison flex libssl-dev bc device-tree-compiler build-essential gcc-aarch64-linux-gnu
+          sudo -E systemctl daemon-reload
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          sudo -E timedatectl set-timezone "${TZ}"
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Create simulated physical disk
+        id: disk
+        run: |
+          mnt_size=$(expr $(df -h /mnt | tail -1 | awk '{print $4}' | sed 's/[[:alpha:]]//g' | sed 's/\..*//') - 1)
+          sudo truncate -s "${mnt_size}"G /mnt/mnt.img
+          sudo losetup /dev/loop6 /mnt/mnt.img
+          sudo mkfs.xfs /dev/loop6
+          sudo mkdir -p /builder
+          sudo mount /dev/loop6 /builder
+          sudo chown -R runner.runner /builder
+          df -Th
+
+      - name: Fast Compile Specific DTB
+        id: compile
+        working-directory: /builder
+        run: |
+          echo ">>> 1. 下载源码 (vincentTea/linux-6.1.y-rockchip)..."
+          git clone --depth 1 -b linux-6.1.y-rockchip https://github.com/vincentTea/linux-6.1.y-rockchip.git kernel
+          cd kernel
+
+          echo ">>> 2. 准备配置 (Make Config)..."
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          # 使用 Rockchip 专用配置，确保节点完整
+          if [ -f "arch/arm64/configs/rockchip_linux_defconfig" ]; then
+              make rockchip_linux_defconfig
+          else
+              echo "警告: 未找到 rockchip_linux_defconfig，回退到 defconfig"
+              make defconfig
+          fi
+          # 刷新配置
+          make olddefconfig
+
+          echo ">>> 3. 极速编译指定 DTB..."
+          # 这里指定你的目标 dts 文件路径
+          TARGET_DTS="rockchip/rk3566-taishanpi-dsi-hibuffx-v10.dtb"
+          
+          echo "正在编译: ${TARGET_DTS}"
+          make -j$(nproc) ${TARGET_DTS}
+
+          echo ">>> 4. 导出结果..."
+          # 生成文件名: hibuffx-MMdd HHmm.dtb
+          TIME_STR=$(date "+%m%d %H%M")
+          OUTPUT_NAME="hibuffx-${TIME_STR}.dtb"
+          
+          mkdir -p ../output
+          
+          if [ -f "arch/arm64/boot/dts/${TARGET_DTS}" ]; then
+              cp "arch/arm64/boot/dts/${TARGET_DTS}" "../output/${OUTPUT_NAME}"
+              
+              # 导出环境变量供后续步骤使用
+              echo "COMPILE_STATUS=success" >> $GITHUB_ENV
+              echo "OUTPUT_FILE=${OUTPUT_NAME}" >> $GITHUB_ENV
+              echo "BUILD_TIME=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
+              
+              echo "成功生成: ${OUTPUT_NAME}"
+              ls -l "../output/${OUTPUT_NAME}"
+          else
+              echo "错误: 编译失败，未找到产物"
+              exit 1
+          fi
+
+      - name: Generate release body
+        id: body
+        if: env.COMPILE_STATUS == 'success' && !cancelled()
+        run: |
+          # 生成 Release 标签
+          echo "release_tag=dtb_debug_$(date +'%Y%m%d_%H%M%S')" >> $GITHUB_ENV
+          
+          # 这一步将构造 Release 的正文内容
+          # 使用 EOF 块来支持多行文本
+          {
+            echo "release_body<<EOF"
+            echo "## 📝 调试备注"
+            echo "> **${{ inputs.build_note }}**"
+            echo ""
+            echo "---"
+            echo "## 📦 构建信息"
+            echo "- **源码分支**: vincentTea/linux-6.1.y-rockchip"
+            echo "- **目标文件**: \`${{ env.OUTPUT_FILE }}\`"
+            echo "- **构建时间**: ${{ env.BUILD_TIME }}"
+            echo "- **配置方式**: \`rockchip_linux_defconfig\` (完整节点)"
+            echo "EOF"
+          } >> $GITHUB_ENV
+
+      - name: Upload to Release
+        uses: ncipollo/release-action@main
+        if: env.COMPILE_STATUS == 'success' && !cancelled()
+        with:
+          tag: ${{ env.release_tag }}
+          name: 调试: ${{ inputs.build_note }} (${{ env.BUILD_TIME }})
+          artifacts: /builder/output/*
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: ${{ env.release_body }}

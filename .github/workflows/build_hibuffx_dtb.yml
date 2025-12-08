@@ -1,6 +1,6 @@
 #==========================================================================
 # Description: Fast Compile Specific DTB with Custom Notes
-# Target: vincentTea/linux-6.1.y-rockchip
+# Target: vincentTea/linux-6.1.y-rockchip (Branch: main)
 #==========================================================================
 
 name: Compile Specific DTB (Fast Mode)
@@ -67,14 +67,15 @@ jobs:
         working-directory: /builder
         run: |
           echo ">>> 1. 下载源码 (vincentTea/linux-6.1.y-rockchip)..."
-          git clone --depth 1 -b linux-6.1.y-rockchip https://github.com/vincentTea/linux-6.1.y-rockchip.git kernel
+          # 修正点：使用 -b main 指定分支
+          git clone --depth 1 -b main https://github.com/vincentTea/linux-6.1.y-rockchip.git kernel
           cd kernel
 
           echo ">>> 2. 准备配置 (Make Config)..."
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 使用 Rockchip 专用配置，确保节点完整
+          # 使用 Rockchip 专用配置
           if [ -f "arch/arm64/configs/rockchip_linux_defconfig" ]; then
               make rockchip_linux_defconfig
           else
@@ -85,7 +86,7 @@ jobs:
           make olddefconfig
 
           echo ">>> 3. 极速编译指定 DTB..."
-          # 这里指定你的目标 dts 文件路径
+          # 指定目标 dts (相对于 arch/arm64/boot/dts/ 目录)
           TARGET_DTS="rockchip/rk3566-taishanpi-dsi-hibuffx-v10.dtb"
           
           echo "正在编译: ${TARGET_DTS}"
@@ -101,7 +102,6 @@ jobs:
           if [ -f "arch/arm64/boot/dts/${TARGET_DTS}" ]; then
               cp "arch/arm64/boot/dts/${TARGET_DTS}" "../output/${OUTPUT_NAME}"
               
-              # 导出环境变量供后续步骤使用
               echo "COMPILE_STATUS=success" >> $GITHUB_ENV
               echo "OUTPUT_FILE=${OUTPUT_NAME}" >> $GITHUB_ENV
               echo "BUILD_TIME=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
@@ -109,7 +109,8 @@ jobs:
               echo "成功生成: ${OUTPUT_NAME}"
               ls -l "../output/${OUTPUT_NAME}"
           else
-              echo "错误: 编译失败，未找到产物"
+              echo "错误: 编译失败，未找到产物: arch/arm64/boot/dts/${TARGET_DTS}"
+              echo "可能是文件名拼写错误，或者该文件依赖的 .dtsi 不完整"
               exit 1
           fi
 
@@ -117,10 +118,8 @@ jobs:
         id: body
         if: env.COMPILE_STATUS == 'success' && !cancelled()
         run: |
-          # 生成 Release 标签
           echo "release_tag=dtb_debug_$(date +'%Y%m%d_%H%M%S')" >> $GITHUB_ENV
           
-          # 生成 Body 内容
           {
             echo "release_body<<EOF"
             echo "## 📝 调试备注"
@@ -128,10 +127,11 @@ jobs:
             echo ""
             echo "---"
             echo "## 📦 构建信息"
-            echo "- **源码分支**: vincentTea/linux-6.1.y-rockchip"
-            echo "- **目标文件**: \`${{ env.OUTPUT_FILE }}\`"
-            echo "- **构建时间**: ${{ env.BUILD_TIME }}"
-            echo "- **配置方式**: \`rockchip_linux_defconfig\` (完整节点)"
+            echo "- **仓库**: vincentTea/linux-6.1.y-rockchip"
+            echo "- **分支**: main"
+            echo "- **产物**: \`${{ env.OUTPUT_FILE }}\`"
+            echo "- **时间**: ${{ env.BUILD_TIME }}"
+            echo "- **配置**: \`rockchip_linux_defconfig\`"
             echo "EOF"
           } >> $GITHUB_ENV
 
@@ -140,7 +140,6 @@ jobs:
         if: env.COMPILE_STATUS == 'success' && !cancelled()
         with:
           tag: ${{ env.release_tag }}
-          # 修复部分：这里必须加双引号，因为内容里包含冒号
           name: "调试: ${{ inputs.build_note }} (${{ env.BUILD_TIME }})"
           artifacts: /builder/output/*
           allowUpdates: true

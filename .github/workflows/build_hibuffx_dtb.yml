@@ -14,7 +14,6 @@ on:
         required: true
         default: "调试记录: "
         type: string
-      # 即使代码写死，保留这个选项作为提示
       kernel_source:
         description: "Source Repo (Fixed)"
         required: false
@@ -121,8 +120,7 @@ jobs:
           # 生成 Release 标签
           echo "release_tag=dtb_debug_$(date +'%Y%m%d_%H%M%S')" >> $GITHUB_ENV
           
-          # 这一步将构造 Release 的正文内容
-          # 使用 EOF 块来支持多行文本
+          # 生成 Body 内容
           {
             echo "release_body<<EOF"
             echo "## 📝 调试备注"
@@ -142,7 +140,8 @@ jobs:
         if: env.COMPILE_STATUS == 'success' && !cancelled()
         with:
           tag: ${{ env.release_tag }}
-          name: 调试: ${{ inputs.build_note }} (${{ env.BUILD_TIME }})
+          # 修复部分：这里必须加双引号，因为内容里包含冒号
+          name: "调试: ${{ inputs.build_note }} (${{ env.BUILD_TIME }})"
           artifacts: /builder/output/*
           allowUpdates: true
           token: ${{ secrets.GITHUB_TOKEN }}
